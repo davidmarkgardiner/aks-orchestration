@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AKS Installation Orchestrator</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 20px; 
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .button { 
+            padding: 15px 30px;
+            background-color: #0078D4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        .button:hover {
+            background-color: #006abc;
+        }
+        .button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .script-item {
+            margin: 8px 0;
+            padding: 8px;
+            border-radius: 4px;
+        }
+        .completed { 
+            color: #2e7d32;
+            background-color: #e8f5e9;
+        }
+        .error { 
+            color: #c62828;
+            background-color: #ffebee;
+        }
+        .in-progress { 
+            color: #1565c0;
+            background-color: #e3f2fd;
+        }
+    </style>
+    <script>
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusDiv = document.getElementById('status');
+                    let html = '<h3>Execution Status:</h3>';
+                    
+                    if (data.in_progress) {
+                        document.getElementById('startBtn').disabled = true;
+                        html += `<div class="script-item in-progress">
+                            Currently executing: ${data.current_script}
+                        </div>`;
+                    } else {
+                        document.getElementById('startBtn').disabled = false;
+                    }
+                    
+                    if (data.completed.length > 0) {
+                        html += '<h4>Completed:</h4>';
+                        data.completed.forEach(script => {
+                            html += `<div class="script-item completed">✓ ${script}</div>`;
+                        });
+                    }
+                    
+                    if (data.errors.length > 0) {
+                        html += '<h4>Errors:</h4>';
+                        data.errors.forEach(error => {
+                            html += `<div class="script-item error">✗ ${error}</div>`;
+                        });
+                    }
+                    
+                    statusDiv.innerHTML = html;
+                });
+        }
+
+        function startExecution() {
+            fetch('/start', {method: 'POST'})
+                .then(response => response.json())
+                .then(data => {
+                    updateStatus();
+                });
+        }
+
+        // Update status every 2 seconds
+        setInterval(updateStatus, 2000);
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>AKS Installation Orchestrator</h1>
+        <button id="startBtn" class="button" onclick="startExecution()">Start Installation</button>
+        <div id="status" class="status">
+            <h3>Execution Status:</h3>
+            <p>Click the button to start installation</p>
+        </div>
+    </div>
+</body>
+</html> 

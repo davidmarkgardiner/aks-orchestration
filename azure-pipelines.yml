@@ -1,0 +1,90 @@
+trigger:
+  - main
+
+variables:
+  GO_VERSION: '1.21'
+  IMAGE_NAME: 'script-orchestrator'
+  AZURE_SUBSCRIPTION: 'your-azure-subscription'
+  RESOURCE_GROUP: 'your-resource-group'
+  APP_SERVICE_NAME: 'script-orchestrator-app'
+
+stages:
+- stage: Build
+  jobs:
+  - job: BuildAndTest
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: GoTool@0
+      inputs:
+        version: '$(GO_VERSION)'
+      displayName: 'Install Go'
+
+    - script: |
+        go mod download
+        go build -o script-orchestrator
+      displayName: 'Build Application'
+
+    - task: Docker@2
+      inputs:
+        containerRegistry: 'your-container-registry'
+        repository: '$(IMAGE_NAME)'
+        command: 'buildAndPush'
+        Dockerfile: '**/Dockerfile'
+        tags: |
+          $(Build.BuildId)
+          latest
+      displayName: 'Build and Push Docker Image'
+
+    - task: CopyFiles@2
+      inputs:
+        Contents: |
+          scripts/**
+          templates/**
+          Dockerfile
+          azure-pipelines.yml
+        TargetFolder: '$(Build.ArtifactStagingDirectory)'
+      displayName: 'Copy Deployment Files'
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+      displayName: 'Publish Artifacts'
+
+- stage: Deploy
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployToAzure
+    pool:
+      vmImage: 'ubuntu-latest'
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureWebAppContainer@1
+            inputs:
+              azureSubscription: '$(AZURE_SUBSCRIPTION)'
+              appName: '$(APP_SERVICE_NAME)'
+              containers: '$(IMAGE_NAME):$(Build.BuildId)'
+            displayName: 'Deploy to Azure Web App for Containers'
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: '$(AZURE_SUBSCRIPTION)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Create directory for scripts
+                az webapp ssh --resource-group $(RESOURCE_GROUP) --name $(APP_SERVICE_NAME) --command "mkdir -p /home/site/wwwroot/scripts"
+                
+                # Copy scripts to web app
+                for script in scripts/*.sh; do
+                  az webapp deploy --resource-group $(RESOURCE_GROUP) --name $(APP_SERVICE_NAME) --src-path "$script" --target-path "/home/site/wwwroot/scripts/$(basename $script)"
+                done
+                
+                # Make scripts executable
+                az webapp ssh --resource-group $(RESOURCE_GROUP) --name $(APP_SERVICE_NAME) --command "chmod +x /home/site/wwwroot/scripts/*.sh"
+            displayName: 'Configure Scripts in Azure Web App' 

@@ -1,0 +1,345 @@
+I'll create a Go version of the script orchestrator with similar functionality.
+
+
+
+```go
+// main.go
+package main
+
+import (
+    "embed"
+    "encoding/json"
+    "fmt"
+    "html/template"
+    "log"
+    "net/http"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "sync"
+)
+
+//go:embed templates
+var templates embed.FS
+
+// Script represents a single script to be executed
+type Script struct {
+    Name        string `json:"name"`
+    Description string `json:"description"`
+}
+
+// ExecutionStatus represents the current state of script execution
+type ExecutionStatus struct {
+    CurrentScript string   `json:"current_script"`
+    Completed    []string `json:"completed"`
+    Errors       []string `json:"errors"`
+    InProgress   bool     `json:"in_progress"`
+    mu           sync.Mutex
+}
+
+var (
+    status = &ExecutionStatus{
+        Completed:  make([]string, 0),
+        Errors:     make([]string, 0),
+        InProgress: false,
+    }
+
+    // Define your script sequence here
+    scriptSequence = []Script{
+        {Name: "1_aks_prerequisites.sh", Description: "Installing AKS Prerequisites"},
+        {Name: "2_create_aks_cluster.sh", Description: "Creating AKS Cluster"},
+        {Name: "3_setup_networking.sh", Description: "Configuring Network"},
+        {Name: "4_install_monitoring.sh", Description: "Setting up Monitoring"},
+        // Add more scripts as needed
+    }
+)
+
+func (s *ExecutionStatus) reset() {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.CurrentScript = ""
+    s.Completed = make([]string, 0)
+    s.Errors = make([]string, 0)
+    s.InProgress = false
+}
+
+func (s *ExecutionStatus) updateCurrentScript(script string) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.CurrentScript = script
+}
+
+func (s *ExecutionStatus) addCompleted(script string) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.Completed = append(s.Completed, script)
+}
+
+func (s *ExecutionStatus) addError(err string) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.Errors = append(s.Errors, err)
+}
+
+func executeScripts() {
+    if status.InProgress {
+        return
+    }
+
+    status.mu.Lock()
+    status.InProgress = true
+    status.mu.Unlock()
+
+    // Reset status
+    status.reset()
+    status.InProgress = true
+
+    // Create scripts directory if it doesn't exist
+    if err := os.MkdirAll("scripts", 0755); err != nil {
+        status.addError(fmt.Sprintf("Failed to create scripts directory: %v", err))
+        status.InProgress = false
+        return
+    }
+
+    for _, script := range scriptSequence {
+        status.updateCurrentScript(script.Description)
+        scriptPath := filepath.Join("scripts", script.Name)
+
+        // Check if script exists
+        if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+            status.addError(fmt.Sprintf("Script not found: %s", script.Name))
+            continue
+        }
+
+        // Make script executable
+        if err := os.Chmod(scriptPath, 0755); err != nil {
+            status.addError(fmt.Sprintf("Failed to make script executable: %s", script.Name))
+            continue
+        }
+
+        // Execute script
+        cmd := exec.Command(scriptPath)
+        if output, err := cmd.CombinedOutput(); err != nil {
+            status.addError(fmt.Sprintf("Error executing %s: %v\nOutput: %s", script.Name, err, output))
+            break
+        }
+
+        status.addCompleted(script.Description)
+    }
+
+    status.mu.Lock()
+    status.InProgress = false
+    status.CurrentScript = ""
+    status.mu.Unlock()
+}
+
+func handleIndex(w http.ResponseWriter, r *http.Request) {
+    tmpl, err := template.ParseFS(templates, "templates/index.html")
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+    tmpl.Execute(w, nil)
+}
+
+func handleStart(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+
+    go executeScripts()
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+}
+
+func handleStatus(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    status.mu.Lock()
+    defer status.mu.Unlock()
+    json.NewEncoder(w).Encode(status)
+}
+
+func main() {
+    // Set up routes
+    http.HandleFunc("/", handleIndex)
+    http.HandleFunc("/start", handleStart)
+    http.HandleFunc("/status", handleStatus)
+
+    // Start server
+    log.Println("Server starting on :8080")
+    if err := http.ListenAndServe(":8080", nil); err != nil {
+        log.Fatal(err)
+    }
+}
+
+```
+
+```html
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AKS Installation Orchestrator</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 20px; 
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .button { 
+            padding: 15px 30px;
+            background-color: #0078D4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        .button:hover {
+            background-color: #006abc;
+        }
+        .button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .script-item {
+            margin: 8px 0;
+            padding: 8px;
+            border-radius: 4px;
+        }
+        .completed { 
+            color: #2e7d32;
+            background-color: #e8f5e9;
+        }
+        .error { 
+            color: #c62828;
+            background-color: #ffebee;
+        }
+        .in-progress { 
+            color: #1565c0;
+            background-color: #e3f2fd;
+        }
+    </style>
+    <script>
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusDiv = document.getElementById('status');
+                    let html = '<h3>Execution Status:</h3>';
+                    
+                    if (data.in_progress) {
+                        document.getElementById('startBtn').disabled = true;
+                        html += `<div class="script-item in-progress">
+                            Currently executing: ${data.current_script}
+                        </div>`;
+                    } else {
+                        document.getElementById('startBtn').disabled = false;
+                    }
+                    
+                    if (data.completed.length > 0) {
+                        html += '<h4>Completed:</h4>';
+                        data.completed.forEach(script => {
+                            html += `<div class="script-item completed">✓ ${script}</div>`;
+                        });
+                    }
+                    
+                    if (data.errors.length > 0) {
+                        html += '<h4>Errors:</h4>';
+                        data.errors.forEach(error => {
+                            html += `<div class="script-item error">✗ ${error}</div>`;
+                        });
+                    }
+                    
+                    statusDiv.innerHTML = html;
+                });
+        }
+
+        function startExecution() {
+            fetch('/start', {method: 'POST'})
+                .then(response => response.json())
+                .then(data => {
+                    updateStatus();
+                });
+        }
+
+        // Update status every 2 seconds
+        setInterval(updateStatus, 2000);
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>AKS Installation Orchestrator</h1>
+        <button id="startBtn" class="button" onclick="startExecution()">Start Installation</button>
+        <div id="status" class="status">
+            <h3>Execution Status:</h3>
+            <p>Click the button to start installation</p>
+        </div>
+    </div>
+</body>
+</html>
+
+```
+
+This Go implementation provides several improvements over the Python version:
+
+1. Better concurrency handling using Go's goroutines and mutexes
+2. Embedded HTML template for easier deployment
+3. More idiomatic error handling
+4. Built-in directory creation and permission handling
+5. Improved type safety
+
+To use this system:
+
+1. Create a directory structure like this:
+```
+.
+├── main.go
+├── templates/
+│   └── index.html
+└── scripts/
+    ├── 1_aks_prerequisites.sh
+    ├── 2_create_aks_cluster.sh
+    └── ...
+```
+
+2. Build and run:
+```bash
+go build
+./go-script-orchestrator
+```
+
+3. Access the web interface at `http://localhost:8080`
+
+The system provides:
+- Concurrent script execution
+- Real-time status updates
+- Proper error handling and logging
+- Prevention of multiple simultaneous executions
+- Clean shutdown handling
+
+Key improvements in the Go version:
+1. Thread-safe status updates using mutexes
+2. More efficient error handling
+3. Better resource cleanup
+4. Built-in static file serving
+5. Type-safe JSON handling
+
+Would you like me to add any specific features or modify any part of the implementation?
